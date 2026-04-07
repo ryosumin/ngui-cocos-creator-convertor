@@ -1,41 +1,30 @@
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.UI;
 using System.IO;
-using System.Collections;
 using System.Collections.Generic;
 using LitJson;
+using TMPro;
 
-public class ExportPrefabToJson : Editor
+public class ExportUGUIToJson : Editor
 {
-    delegate bool Filter(Component component);
-
-    [MenuItem("Assets/Export To Json")]
+    [MenuItem("Assets/Export UGUI To Json")]
     static void ExportSelect()
     {
-        if (Selection.objects != null)
-        {
-            Object[] prefabs = Selection.GetFiltered(typeof(GameObject), SelectionMode.TopLevel);
-            if (prefabs != null)
-            {
+        Object[] prefabs = Selection.GetFiltered(typeof(GameObject), SelectionMode.TopLevel);
 
-                // string outPath = Application.dataPath + "/../../../../../TulongQPProject/Assets/Tlqp/Lua/View";
-                string savePath = EditorUtility.SaveFolderPanel("选择导出位置", null, "");
-                if (!string.IsNullOrEmpty(savePath))
-                {
-                    foreach (Object obj in prefabs)
-                    {
-                        ExportJson(obj as GameObject, savePath);
-                    }
-                }
-            }
+        string savePath = EditorUtility.SaveFolderPanel("选择导出位置", null, "");
+        if (string.IsNullOrEmpty(savePath)) return;
+
+        foreach (Object obj in prefabs)
+        {
+            ExportJson(obj as GameObject, savePath);
         }
     }
 
     static void ExportJson(GameObject prefab, string savePath)
     {
         JsonData jd = GetNodeJson(prefab);
-
-        // Debug.Log(JsonMapper.ToJson(jd));
         WriteJsonFile(JsonMapper.ToJson(jd), savePath, prefab.name);
     }
 
@@ -43,127 +32,172 @@ public class ExportPrefabToJson : Editor
     {
         JsonData node = new JsonData();
         node["name"] = go.name;
+
+        // Is Prefab?
+        if (PrefabUtility.IsAnyPrefabInstanceRoot(go))
+        {
+            GameObject source = PrefabUtility.GetCorrespondingObjectFromSource(go);
+
+            // JsonData node = new JsonData();
+            node["prefab"] = new JsonData();
+            node["prefab"]["path"] = AssetDatabase.GetAssetPath(source);
+
+            JsonData overrides = GetOverrides(go);
+            if (overrides != null)
+                node["overrides"] = overrides;
+
+            return node; // ⭐ 不展開 children
+        }
+
+        RectTransform rt = go.GetComponent<RectTransform>();
+        // 位置
         node["pos"] = new JsonData();
-        // 保留小数点后两位
-        node["pos"]["x"] = System.Math.Round((double)go.transform.localPosition.x, 2);
-        node["pos"]["y"] = System.Math.Round((double)go.transform.localPosition.y, 2);
+        node["pos"]["x"] = System.Math.Round((double)rt.anchoredPosition.x, 2);
+        node["pos"]["y"] = System.Math.Round((double)rt.anchoredPosition.y, 2);
+
+        // 尺寸
+        node["size"] = new JsonData();
+        node["size"]["w"] = System.Math.Round((double)rt.sizeDelta.x, 2);
+        node["size"]["h"] = System.Math.Round((double)rt.sizeDelta.y, 2);
+
+        // scale
         node["scale"] = new JsonData();
-        node["scale"]["x"] = System.Math.Round((double)go.transform.localScale.x, 2);
-        node["scale"]["y"] = System.Math.Round((double)go.transform.localScale.y, 2);
-        node["rotation"] = System.Math.Round((double)go.transform.localEulerAngles.z, 2);
+        node["scale"]["x"] = System.Math.Round((double)rt.localScale.x, 2);
+        node["scale"]["y"] = System.Math.Round((double)rt.localScale.y, 2);
+
+        node["rotation"] = System.Math.Round((double)rt.localEulerAngles.z, 2);
         node["active"] = go.activeSelf;
 
-        Component[] comps = go.GetComponents<UIWidget>();
-        if (comps.Length > 0)
+        // ===== UI 元件 =====
+        node["components"] = new JsonData();
+        node["components"].SetJsonType(JsonType.Array); // 一定要這行
+
+        // Image
+        Image img = go.GetComponent<Image>();
+        if (img)
         {
-            node["components"] = new JsonData();
-            foreach (UIWidget comp in comps)
+            JsonData cj = new JsonData();
+            cj["type"] = "Image";
+            cj["imageType"] = img.type.ToString();
+            cj["color"] = ColorUtility.ToHtmlStringRGBA(img.color);
+
+            if (img.sprite != null)
             {
-                JsonData cj = new JsonData();
-                cj["type"] = comp.GetType().ToString();
-                cj["size"] = new JsonData();
-                cj["size"]["width"] = comp.width;
-                cj["size"]["height"] = comp.height;
-                cj["color"] = ColorUtility.ToHtmlStringRGB(comp.color);
-                cj["depth"] = comp.depth;
-                cj["pivot"] = comp.pivot.ToString();
+                cj["sprite"] = img.sprite.name;
 
-                if (comp is UILabel)
-                {
-                    UILabel label = (comp as UILabel);
-                    cj["text"] = label.text;
-                    cj["fontSize"] = label.fontSize;
-                    cj["overflow"] = label.overflowMethod.ToString();
-                    if (label.effectStyle == UILabel.Effect.Outline || label.effectStyle == UILabel.Effect.Outline8)
-                    {
-                        cj["outlineColor"] = ColorUtility.ToHtmlStringRGB(label.effectColor);
-                        cj["outlineWidth"] = label.effectiveSpacingX;
-                    }
-
-                    cj["spacingX"] = label.spacingX;
-                    cj["spacingY"] = label.spacingY;
-
-                    if (label.bitmapFont)
-                    {
-                        // Debug.Log(label.bitmapFont.name);
-                        cj["bitmapFont"] = label.bitmapFont.name;
-                    }
-                }
-
-                if (comp is UISprite)
-                {
-                    UISprite sprite = comp as UISprite;
-                    cj["spType"] = sprite.type.ToString();
-                    cj["spName"] = sprite.spriteName;
-                    if (sprite.atlas)
-                    {
-                        cj["atlas"] = sprite.atlas.name;
-                    }
-
-                    if (sprite.border != Vector4.zero)
-                    {
-                        cj["border"] = new JsonData();
-                        cj["border"]["left"] = sprite.border.x;
-                        cj["border"]["right"] = sprite.border.z;
-                        cj["border"]["top"] = sprite.border.w;
-                        cj["border"]["bottom"] = sprite.border.y;
-                        // Debug.Log("border: " + sprite.spriteName + " node: " + go.name);
-                    }
-
-                    if (sprite.type == UIBasicSprite.Type.Filled)
-                    {
-                        cj["fillDir"] = (uint)sprite.fillDirection;
-                    }
-                }
-
-                if (comp is UITexture)
-                {
-                    UITexture texture = comp as UITexture;
-                    if (texture.mainTexture != null)
-                    {
-                        cj["spName"] = texture.mainTexture.name;
-                        cj["spType"] = texture.type.ToString();
-                    }
-                }
-
-                node["components"].Add(cj);
+                string path = AssetDatabase.GetAssetPath(img.sprite);
+                cj["spritePath"] = path;
             }
+            // ⭐ 9-slice
+            Vector4 border = img.sprite != null ? img.sprite.border : Vector4.zero;
+            if (border != Vector4.zero)
+            {
+                cj["border"] = new JsonData();
+                cj["border"]["left"] = border.x;
+                cj["border"]["right"] = border.z;
+                cj["border"]["top"] = border.w;
+                cj["border"]["bottom"] = border.y;
+            }
+
+            // ⭐ ProgressBar（關鍵）
+            if (img.type == Image.Type.Filled)
+            {
+                cj["fill"] = new JsonData();
+                cj["fill"]["method"] = img.fillMethod.ToString();
+                cj["fill"]["origin"] = img.fillOrigin;
+                cj["fill"]["amount"] = img.fillAmount;
+                cj["fill"]["clockwise"] = img.fillClockwise;
+            }
+
+            node["components"].Add(cj);
         }
 
-        Component[] boxes = go.GetComponents<BoxCollider>();
-        if (boxes.Length > 0)
+        // RawImage
+        RawImage raw = go.GetComponent<RawImage>();
+        if (raw)
         {
-            node["button"] = true;
+            JsonData cj = new JsonData();
+            cj["type"] = "RawImage";
+
+            if (raw.texture != null)
+            {
+                cj["texture"] = raw.texture.name;
+            }
+
+            node["components"].Add(cj);
         }
 
-        UIScrollView sv = go.GetComponent<UIScrollView>();
-        if (sv)
+        // Text (舊版)
+        Text txt = go.GetComponent<Text>();
+        if (txt)
         {
-            UIPanel panel = go.GetComponent<UIPanel>();
+            JsonData cj = new JsonData();
+            cj["type"] = "Text";
+            cj["text"] = txt.text;
+            cj["fontSize"] = txt.fontSize;
+            cj["color"] = ColorUtility.ToHtmlStringRGBA(txt.color);
+            cj["alignment"] = txt.alignment.ToString();
+
+            if (txt.font != null)
+                cj["font"] = txt.font.name;
+
+            node["components"].Add(cj);
+        }
+
+        // TMP_Text
+        TMP_Text tmp = go.GetComponent<TMP_Text>();
+        if (tmp)
+        {
+            JsonData cj = new JsonData();
+            cj["type"] = "TMP_Text";
+            cj["text"] = tmp.text;
+            cj["fontSize"] = tmp.fontSize;
+            cj["color"] = ColorUtility.ToHtmlStringRGBA(tmp.color);
+
+            if (tmp.font != null)
+                cj["font"] = tmp.font.name;
+
+            node["components"].Add(cj);
+        }
+
+        // Button
+        Button btn = go.GetComponent<Button>();
+        if (btn)
+        {
+            // node["button"] = true;
+            JsonData cj = new JsonData();
+            cj["type"] = "Button";
+            node["components"].Add(cj);
+        }
+        // Toggle
+        // Slider
+        // ScrollRect
+        ScrollRect sr = go.GetComponent<ScrollRect>();
+        if (sr)
+        {
             node["scrollView"] = new JsonData();
-            node["scrollView"]["offset"] = new JsonData();
-            node["scrollView"]["offset"]["x"] = panel.clipOffset.x + panel.finalClipRegion.x;
-            node["scrollView"]["offset"]["y"] = panel.clipOffset.y + panel.finalClipRegion.y;
-            node["scrollView"]["size"] = new JsonData();
-            node["scrollView"]["size"]["x"] = panel.finalClipRegion.z;
-            node["scrollView"]["size"]["y"] = panel.finalClipRegion.w;
-            node["scrollView"]["movement"] = (int)sv.movement;
+            node["scrollView"]["horizontal"] = sr.horizontal;
+            node["scrollView"]["vertical"] = sr.vertical;
         }
 
-        UIGrid grid = go.GetComponent<UIGrid>();
-        if (grid && grid.enabled)
+        // GridLayoutGroup
+        GridLayoutGroup grid = go.GetComponent<GridLayoutGroup>();
+        if (grid)
         {
             node["grid"] = new JsonData();
-            node["grid"]["arrangement"] = (uint)grid.arrangement;
+            node["grid"]["cellSizeX"] = grid.cellSize.x;
+            node["grid"]["cellSizeY"] = grid.cellSize.y;
+            node["grid"]["spacingX"] = grid.spacing.x;
+            node["grid"]["spacingY"] = grid.spacing.y;
         }
 
+        // ===== children =====
         if (go.transform.childCount > 0)
         {
             node["children"] = new JsonData();
-            for (int i = 0, len = go.transform.childCount; i < len; ++i)
+            for (int i = 0; i < go.transform.childCount; i++)
             {
-                JsonData child = GetNodeJson(go.transform.GetChild(i).gameObject);
-                node["children"].Add(child);
+                node["children"].Add(GetNodeJson(go.transform.GetChild(i).gameObject));
             }
         }
 
@@ -172,45 +206,61 @@ public class ExportPrefabToJson : Editor
 
     static void WriteJsonFile(string content, string savePath, string name)
     {
-        savePath = string.Format("{0}/{1}.json", savePath, name);
-        Debug.Log("SavePath: " + savePath);
-        if (File.Exists(savePath))
+        string fullPath = $"{savePath}/{name}.json";
+
+        if (File.Exists(fullPath))
         {
-            int option = EditorUtility.DisplayDialogComplex("文件已存在",
-                savePath + "已存在, 是否替换?",
-                "替换",
-                "取消",
-                "保留两者");
+            File.Delete(fullPath);
+        }
 
-            switch (option)
+        File.WriteAllText(fullPath, content);
+        Debug.Log("Exported: " + fullPath);
+    }
+    
+    static JsonData GetOverrides(GameObject go)
+    {
+        var mods = PrefabUtility.GetPropertyModifications(go);
+
+        if (mods == null || mods.Length == 0)
+            return null;
+
+        JsonData overrides = new JsonData();
+
+        foreach (var mod in mods)
+        {
+            if (mod.target == null) continue;
+
+            string compName = mod.target.GetType().Name;
+            string path = mod.propertyPath;
+
+            JsonData compData;
+
+            // ⭐ 安全取得 / 建立
+            try
             {
-                case 0:
-                    File.Delete(savePath);
-                    break;
+                compData = overrides[compName];
+            }
+            catch
+            {
+                compData = new JsonData();
+                overrides[compName] = compData;
+            }
 
-                case 1:
-                    return;
+            // ⭐ value
+            if (!string.IsNullOrEmpty(mod.value))
+            {
+                compData[path] = mod.value;
+            }
+            // ⭐ object reference
+            else if (mod.objectReference != null)
+            {
+                compData[path] = mod.objectReference.name;
 
-                case 2:
-                    savePath = savePath.Replace(".lua", "_auto.lua");
-                    if (File.Exists(savePath))
-                        File.Delete(savePath);
-                    break;
-
-                default:
-                    Debug.LogError("Unrecognized option.");
-                    break;
+                string assetPath = AssetDatabase.GetAssetPath(mod.objectReference);
+                compData[path + "_path"] = assetPath;
             }
         }
 
-        FileStream fs = new FileStream(savePath, FileMode.Create);
-        StreamWriter sw = new StreamWriter(fs);
-        sw.Write(content);
-
-        //清空缓冲区
-        sw.Flush();
-        //关闭流
-        sw.Close();
-        fs.Close();
+        return overrides;
     }
 }
