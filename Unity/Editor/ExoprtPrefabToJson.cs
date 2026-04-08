@@ -54,12 +54,28 @@ public class ExportUGUIToJson : Editor
     static JsonData DumpRawComponent(Component comp)
     {
         JsonData data = new JsonData();
+        // data.SetJsonType(JsonType.Object);
 
         SerializedObject so = new SerializedObject(comp);
         SerializedProperty prop = so.GetIterator();
 
         bool enterChildren = true;
         bool hasData = false;
+
+        // // ⭐ 9-slice
+        if(comp is Image)
+        {
+            Image img = (Image) comp;
+            Vector4 border = img.sprite != null ? img.sprite.border : Vector4.zero;
+            if (border != Vector4.zero)
+            {
+                data["border"] = new JsonData();
+                data["border"]["left"] = border.x;
+                data["border"]["right"] = border.z;
+                data["border"]["top"] = border.w;
+                data["border"]["bottom"] = border.y;
+            }
+        }
 
         while (prop.NextVisible(enterChildren))
         {
@@ -70,8 +86,14 @@ public class ExportUGUIToJson : Editor
             // ⭐ 跳過 script reference
             if (path == "m_Script") continue;
 
-            // switch (prop.propertyType)
-            // SerializedPropertyType type = prop.propertyType;
+            // ⭐ 跳過不該序列化的（超重要）
+            if (path.StartsWith("m_OnClick") ||
+                path.StartsWith("m_Navigation") ||
+                path.StartsWith("m_AnimationTriggers"))
+            {
+                continue;
+            }
+
             switch (prop.propertyType)
             {
                 case SerializedPropertyType.Integer:
@@ -93,10 +115,12 @@ public class ExportUGUIToJson : Editor
                     data[path] = prop.stringValue;
                     hasData = true;
                     break;
+
                 case SerializedPropertyType.Color:
                     data[path] = ColorUtility.ToHtmlStringRGBA(prop.colorValue);
                     hasData = true;
                     break;
+
                 case SerializedPropertyType.Enum:
                     data[path] = prop.enumNames[prop.enumValueIndex];
                     hasData = true;
@@ -120,33 +144,108 @@ public class ExportUGUIToJson : Editor
                     data[path] = $"{prop.vector3Value.x},{prop.vector3Value.y},{prop.vector3Value.z}";
                     hasData = true;
                     break;
+
                 case SerializedPropertyType.Vector4:
                     data[path] = $"{prop.vector4Value.x},{prop.vector4Value.y},{prop.vector4Value.z},{prop.vector4Value.w}";
                     hasData = true;
                     break;
+
                 case SerializedPropertyType.Rect:
                     var r = prop.rectValue;
                     data[path] = $"{r.x},{r.y},{r.width},{r.height}";
                     hasData = true;
                     break;
 
-                default:
-                    // ⭐ fallback（關鍵）
-                    try
+                case SerializedPropertyType.Quaternion:
+                    var q = prop.quaternionValue;
+                    data[path] = $"{q.x},{q.y},{q.z},{q.w}";
+                    hasData = true;
+                    break;
+
+                case SerializedPropertyType.Generic:
                     {
-                        string str = prop.ToString();
-                        if (!string.IsNullOrEmpty(str))
-                        {
-                            data[path] = str;
-                            hasData = true;
+                        try{
+                            JsonData sub = DumpGenericProperty(prop);
+                            if (sub != null)
+                            {
+                                data[path] = sub;
+                                hasData = true;
+                            }
+                        }catch{
+
                         }
                     }
-                    catch {}
+                    break;
+
+                default:
+                    // ❌ 不要再用 ToString()
                     break;
             }
         }
 
+        // return hasData ? data : null;
         return data;
+    }
+
+    static JsonData DumpGenericProperty(SerializedProperty prop)
+    {
+        SerializedProperty copy = prop.Copy();
+        SerializedProperty end = copy.GetEndProperty();
+
+        JsonData sub = new JsonData();
+        sub.SetJsonType(JsonType.Object);
+
+        bool hasData = false;
+        bool enter = true;
+
+        while (copy.NextVisible(enter) && !SerializedProperty.EqualContents(copy, end))
+        {
+            enter = false;
+
+            string subPath = copy.propertyPath.Replace(prop.propertyPath + ".", "");
+
+            switch (copy.propertyType)
+            {
+                case SerializedPropertyType.Float:
+                    sub[subPath] = copy.floatValue;
+                    hasData = true;
+                    break;
+
+                case SerializedPropertyType.Boolean:
+                    sub[subPath] = copy.boolValue;
+                    hasData = true;
+                    break;
+
+                case SerializedPropertyType.Integer:
+                    sub[subPath] = copy.intValue;
+                    hasData = true;
+                    break;
+
+                case SerializedPropertyType.Color:
+                    sub[subPath] = ColorUtility.ToHtmlStringRGBA(copy.colorValue);
+                    hasData = true;
+                    break;
+
+                case SerializedPropertyType.Enum:
+                    int index = copy.enumValueIndex;
+                    string[] names = copy.enumNames;
+
+                    if (names != null && index >= 0 && index < names.Length)
+                    {
+                        sub[subPath] = names[index];
+                        sub[subPath + "_index"] = index;
+                    }
+                    else
+                    {
+                        sub[subPath] = index;
+                    }
+
+                    hasData = true;
+                    break;
+            }
+        }
+
+        return hasData ? sub : null;
     }
 
     static JsonData DumpRawComponents(GameObject go)
