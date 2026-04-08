@@ -22,55 +22,154 @@ public class ExportUGUIToJson : Editor
         }
     }
 
+    public static void RunExportCLI()
+    {
+        string[] guids = AssetDatabase.FindAssets(
+            "t:Prefab",
+            new[] { "Assets/Demo" }
+        );
+
+        foreach (string guid in guids)
+        {
+            string path = AssetDatabase.GUIDToAssetPath(guid);
+            GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            
+            Debug.Log($"[RunExport] Path: {path}");
+
+            if (prefab != null)
+            {
+                // ⭐ 取得該 prefab 所在資料夾
+                string exportPath = Path.GetDirectoryName(path);
+                ExportJson(prefab, exportPath);
+            }
+        }
+    }
+
     static void ExportJson(GameObject prefab, string savePath)
     {
         JsonData jd = GetNodeJson(prefab);
         WriteJsonFile(JsonMapper.ToJson(jd), savePath, prefab.name);
     }
 
-    static JsonData GetNodeJson(GameObject go)
+    static JsonData DumpRawComponent(Component comp)
     {
-        JsonData node = new JsonData();
-        node["name"] = go.name;
+        JsonData data = new JsonData();
 
-        // Is Prefab?
-        if (PrefabUtility.IsAnyPrefabInstanceRoot(go))
+        SerializedObject so = new SerializedObject(comp);
+        SerializedProperty prop = so.GetIterator();
+
+        bool enterChildren = true;
+        bool hasData = false;
+
+        while (prop.NextVisible(enterChildren))
         {
-            GameObject source = PrefabUtility.GetCorrespondingObjectFromSource(go);
+            enterChildren = false;
 
-            // JsonData node = new JsonData();
-            node["prefab"] = new JsonData();
-            node["prefab"]["path"] = AssetDatabase.GetAssetPath(source);
+            string path = prop.propertyPath;
 
-            JsonData overrides = GetOverrides(go);
-            if (overrides != null)
-                node["overrides"] = overrides;
+            // ⭐ 跳過 script reference
+            if (path == "m_Script") continue;
 
-            return node; // ⭐ 不展開 children
+            // switch (prop.propertyType)
+            // SerializedPropertyType type = prop.propertyType;
+            switch (prop.propertyType)
+            {
+                case SerializedPropertyType.Integer:
+                    data[path] = prop.intValue;
+                    hasData = true;
+                    break;
+
+                case SerializedPropertyType.Boolean:
+                    data[path] = prop.boolValue;
+                    hasData = true;
+                    break;
+
+                case SerializedPropertyType.Float:
+                    data[path] = prop.floatValue;
+                    hasData = true;
+                    break;
+
+                case SerializedPropertyType.String:
+                    data[path] = prop.stringValue;
+                    hasData = true;
+                    break;
+                case SerializedPropertyType.Color:
+                    data[path] = ColorUtility.ToHtmlStringRGBA(prop.colorValue);
+                    hasData = true;
+                    break;
+                case SerializedPropertyType.Enum:
+                    data[path] = prop.enumNames[prop.enumValueIndex];
+                    hasData = true;
+                    break;
+
+                case SerializedPropertyType.ObjectReference:
+                    if (prop.objectReferenceValue != null)
+                    {
+                        data[path] = prop.objectReferenceValue.name;
+                        data[path + "_path"] = AssetDatabase.GetAssetPath(prop.objectReferenceValue);
+                        hasData = true;
+                    }
+                    break;
+
+                case SerializedPropertyType.Vector2:
+                    data[path] = $"{prop.vector2Value.x},{prop.vector2Value.y}";
+                    hasData = true;
+                    break;
+
+                case SerializedPropertyType.Vector3:
+                    data[path] = $"{prop.vector3Value.x},{prop.vector3Value.y},{prop.vector3Value.z}";
+                    hasData = true;
+                    break;
+                case SerializedPropertyType.Vector4:
+                    data[path] = $"{prop.vector4Value.x},{prop.vector4Value.y},{prop.vector4Value.z},{prop.vector4Value.w}";
+                    hasData = true;
+                    break;
+                case SerializedPropertyType.Rect:
+                    var r = prop.rectValue;
+                    data[path] = $"{r.x},{r.y},{r.width},{r.height}";
+                    hasData = true;
+                    break;
+
+                default:
+                    // ⭐ fallback（關鍵）
+                    try
+                    {
+                        string str = prop.ToString();
+                        if (!string.IsNullOrEmpty(str))
+                        {
+                            data[path] = str;
+                            hasData = true;
+                        }
+                    }
+                    catch {}
+                    break;
+            }
         }
 
-        RectTransform rt = go.GetComponent<RectTransform>();
-        // 位置
-        node["pos"] = new JsonData();
-        node["pos"]["x"] = System.Math.Round((double)rt.anchoredPosition.x, 2);
-        node["pos"]["y"] = System.Math.Round((double)rt.anchoredPosition.y, 2);
+        return data;
+    }
 
-        // 尺寸
-        node["size"] = new JsonData();
-        node["size"]["w"] = System.Math.Round((double)rt.sizeDelta.x, 2);
-        node["size"]["h"] = System.Math.Round((double)rt.sizeDelta.y, 2);
+    static JsonData DumpRawComponents(GameObject go)
+    {
+        Component[] components = go.GetComponents<Component>();
+        JsonData rawCompents = new JsonData();
 
-        // scale
-        node["scale"] = new JsonData();
-        node["scale"]["x"] = System.Math.Round((double)rt.localScale.x, 2);
-        node["scale"]["y"] = System.Math.Round((double)rt.localScale.y, 2);
+        foreach(var cmp in components)
+        {
+            if (cmp == null) continue;
+            string compName = cmp.GetType().Name;
+            // string path = cmp.propertyPath;
+            rawCompents[compName] = DumpRawComponent(cmp);
+        }
+        
+        return rawCompents;
+    }
 
-        node["rotation"] = System.Math.Round((double)rt.localEulerAngles.z, 2);
-        node["active"] = go.activeSelf;
-
+    static JsonData DumpComponents(GameObject go)
+    {
         // ===== UI 元件 =====
-        node["components"] = new JsonData();
-        node["components"].SetJsonType(JsonType.Array); // 一定要這行
+        JsonData components = new JsonData();
+        components.SetJsonType(JsonType.Array); // 一定要這行
 
         // Image
         Image img = go.GetComponent<Image>();
@@ -109,7 +208,7 @@ public class ExportUGUIToJson : Editor
                 cj["fill"]["clockwise"] = img.fillClockwise;
             }
 
-            node["components"].Add(cj);
+            components.Add(cj);
         }
 
         // RawImage
@@ -124,7 +223,7 @@ public class ExportUGUIToJson : Editor
                 cj["texture"] = raw.texture.name;
             }
 
-            node["components"].Add(cj);
+            components.Add(cj);
         }
 
         // Text (舊版)
@@ -141,7 +240,7 @@ public class ExportUGUIToJson : Editor
             if (txt.font != null)
                 cj["font"] = txt.font.name;
 
-            node["components"].Add(cj);
+            components.Add(cj);
         }
 
         // TMP_Text
@@ -157,7 +256,7 @@ public class ExportUGUIToJson : Editor
             if (tmp.font != null)
                 cj["font"] = tmp.font.name;
 
-            node["components"].Add(cj);
+            components.Add(cj);
         }
 
         // Button
@@ -167,7 +266,7 @@ public class ExportUGUIToJson : Editor
             // node["button"] = true;
             JsonData cj = new JsonData();
             cj["type"] = "Button";
-            node["components"].Add(cj);
+            components.Add(cj);
         }
         // Toggle
         // Slider
@@ -175,21 +274,68 @@ public class ExportUGUIToJson : Editor
         ScrollRect sr = go.GetComponent<ScrollRect>();
         if (sr)
         {
-            node["scrollView"] = new JsonData();
-            node["scrollView"]["horizontal"] = sr.horizontal;
-            node["scrollView"]["vertical"] = sr.vertical;
+            // node["scrollView"] = new JsonData();
+            // node["scrollView"]["horizontal"] = sr.horizontal;
+            // node["scrollView"]["vertical"] = sr.vertical;
         }
 
         // GridLayoutGroup
         GridLayoutGroup grid = go.GetComponent<GridLayoutGroup>();
         if (grid)
         {
-            node["grid"] = new JsonData();
-            node["grid"]["cellSizeX"] = grid.cellSize.x;
-            node["grid"]["cellSizeY"] = grid.cellSize.y;
-            node["grid"]["spacingX"] = grid.spacing.x;
-            node["grid"]["spacingY"] = grid.spacing.y;
+            // node["grid"] = new JsonData();
+            // node["grid"]["cellSizeX"] = grid.cellSize.x;
+            // node["grid"]["cellSizeY"] = grid.cellSize.y;
+            // node["grid"]["spacingX"] = grid.spacing.x;
+            // node["grid"]["spacingY"] = grid.spacing.y;
         }
+
+        return components;
+    }
+
+    static JsonData GetNodeJson(GameObject go)
+    {
+        JsonData node = new JsonData();
+        node["name"] = go.name;
+
+        // Is Prefab?
+        if (PrefabUtility.IsAnyPrefabInstanceRoot(go))
+        {
+            GameObject source = PrefabUtility.GetCorrespondingObjectFromSource(go);
+
+            // JsonData node = new JsonData();
+            node["prefab"] = new JsonData();
+            node["prefab"]["path"] = AssetDatabase.GetAssetPath(source);
+
+            JsonData overrides = GetOverrides(go);
+            if (overrides != null)
+                node["overrides"] = overrides;
+
+            return node; // ⭐ 不展開 children
+        }
+
+        /*
+        RectTransform rt = go.GetComponent<RectTransform>();
+        // 位置
+        node["pos"] = new JsonData();
+        node["pos"]["x"] = System.Math.Round((double)rt.anchoredPosition.x, 2);
+        node["pos"]["y"] = System.Math.Round((double)rt.anchoredPosition.y, 2);
+
+        // 尺寸
+        node["size"] = new JsonData();
+        node["size"]["w"] = System.Math.Round((double)rt.sizeDelta.x, 2);
+        node["size"]["h"] = System.Math.Round((double)rt.sizeDelta.y, 2);
+
+        // scale
+        node["scale"] = new JsonData();
+        node["scale"]["x"] = System.Math.Round((double)rt.localScale.x, 2);
+        node["scale"]["y"] = System.Math.Round((double)rt.localScale.y, 2);
+
+        node["rotation"] = System.Math.Round((double)rt.localEulerAngles.z, 2);
+        */
+        node["active"] = go.activeSelf;
+
+        node["components"] = DumpRawComponents(go);
 
         // ===== children =====
         if (go.transform.childCount > 0)
